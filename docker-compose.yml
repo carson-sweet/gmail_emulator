@@ -2,7 +2,7 @@
 
 services:
   # First, transform the Enron data
-  transformer:
+  data-transformer:
     build:
       context: ./transformer
     volumes:
@@ -17,7 +17,7 @@ services:
     profiles: ["transform"]
 
   # Then run the Gmail API emulator
-  gmail-emulator:
+  api-service:
     build:
       context: ./emulator
     ports:
