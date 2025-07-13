@@ -8,6 +8,13 @@
 // Carson Sweet assisted by Claude AI
 // https://www.carsonsweet.com
 
+// main.go
+//
+// Gmail API Emulator for Docker deployment
+// Serves transformed Enron data as Gmail API
+// Version: 2.3 - Added endpoint to list all email addresses in dataset
+// Last Updated: 2025-07-13
+
 package main
 
 import (
@@ -18,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +91,14 @@ type Label struct {
 	Type                  string `json:"type"`
 }
 
+// New structure for user list endpoint
+type UserInfo struct {
+	Email        string `json:"email"`
+	Name         string `json:"name,omitempty"`
+	MessageCount int    `json:"messageCount"`
+	Type         string `json:"type"` // "primary", "contact", "service"
+}
+
 // GmailEmulator serves Gmail API responses
 type GmailEmulator struct {
 	messages       map[string]*GmailMessage
@@ -91,6 +107,7 @@ type GmailEmulator struct {
 	userEmail      string
 	dataPath       string
 	requestLog     []RequestLog
+	userList       []UserInfo // New field for caching user list
 }
 
 type RequestLog struct {
@@ -106,6 +123,7 @@ func NewGmailEmulator(dataPath, userEmail string) (*GmailEmulator, error) {
 		userEmail:  userEmail,
 		dataPath:   dataPath,
 		requestLog: []RequestLog{},
+		userList:   []UserInfo{},
 	}
 
 	// Load messages
@@ -132,9 +150,208 @@ func NewGmailEmulator(dataPath, userEmail string) (*GmailEmulator, error) {
 	// Sort by date for query filtering
 	emulator.messagesByDate = messageSlice
 
+	// Build user list from messages
+	emulator.buildUserList()
+
 	log.Printf("Loaded %d messages from %s", len(emulator.messages), dataPath)
+	log.Printf("Found %d unique email addresses in dataset", len(emulator.userList))
 
 	return emulator, nil
+}
+
+// New method to build user list from messages
+func (e *GmailEmulator) buildUserList() {
+	userMap := make(map[string]*UserInfo)
+
+	// Add the primary user
+	userMap[e.userEmail] = &UserInfo{
+		Email:        e.userEmail,
+		Name:         "You",
+		MessageCount: 0,
+		Type:         "primary",
+	}
+
+	// Scan all messages for email addresses
+	for _, msg := range e.messages {
+		if msg.Payload == nil {
+			continue
+		}
+
+		// Check From header
+		fromEmail, fromName := e.extractEmailAndName(e.getHeader(msg, "From"))
+		if fromEmail != "" {
+			if info, exists := userMap[fromEmail]; exists {
+				info.MessageCount++
+			} else {
+				userMap[fromEmail] = &UserInfo{
+					Email:        fromEmail,
+					Name:         fromName,
+					MessageCount: 1,
+					Type:         e.determineUserType(fromEmail),
+				}
+			}
+		}
+
+		// Check To headers
+		toHeader := e.getHeader(msg, "To")
+		for _, recipient := range strings.Split(toHeader, ",") {
+			email, name := e.extractEmailAndName(strings.TrimSpace(recipient))
+			if email != "" {
+				if info, exists := userMap[email]; exists {
+					info.MessageCount++
+					if info.Name == "" && name != "" {
+						info.Name = name
+					}
+				} else {
+					userMap[email] = &UserInfo{
+						Email:        email,
+						Name:         name,
+						MessageCount: 1,
+						Type:         e.determineUserType(email),
+					}
+				}
+			}
+		}
+
+		// Check CC headers
+		ccHeader := e.getHeader(msg, "Cc")
+		if ccHeader != "" {
+			for _, recipient := range strings.Split(ccHeader, ",") {
+				email, name := e.extractEmailAndName(strings.TrimSpace(recipient))
+				if email != "" {
+					if info, exists := userMap[email]; exists {
+						info.MessageCount++
+						if info.Name == "" && name != "" {
+							info.Name = name
+						}
+					} else {
+						userMap[email] = &UserInfo{
+							Email:        email,
+							Name:         name,
+							MessageCount: 1,
+							Type:         e.determineUserType(email),
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Convert map to sorted slice
+	for _, user := range userMap {
+		e.userList = append(e.userList, *user)
+	}
+
+	// Sort by message count (descending) and then by email
+	sort.Slice(e.userList, func(i, j int) bool {
+		if e.userList[i].MessageCount != e.userList[j].MessageCount {
+			return e.userList[i].MessageCount > e.userList[j].MessageCount
+		}
+		return e.userList[i].Email < e.userList[j].Email
+	})
+}
+
+// Extract email and name from headers like "John Doe <john@example.com>"
+func (e *GmailEmulator) extractEmailAndName(headerValue string) (email, name string) {
+	if headerValue == "" {
+		return "", ""
+	}
+
+	// Handle "Name <email>" format
+	if idx := strings.Index(headerValue, "<"); idx >= 0 {
+		if endIdx := strings.Index(headerValue[idx:], ">"); endIdx > 0 {
+			email = strings.TrimSpace(headerValue[idx+1 : idx+endIdx])
+			name = strings.TrimSpace(headerValue[:idx])
+			return email, name
+		}
+	}
+
+	// Plain email address
+	if strings.Contains(headerValue, "@") {
+		return strings.TrimSpace(headerValue), ""
+	}
+
+	return "", ""
+}
+
+// Determine user type based on email patterns
+func (e *GmailEmulator) determineUserType(email string) string {
+	email = strings.ToLower(email)
+
+	if email == strings.ToLower(e.userEmail) {
+		return "primary"
+	}
+
+	// Service emails
+	servicePatterns := []string{
+		"no-reply", "noreply", "donotreply",
+		"notification", "alert", "system",
+		"@github.com", "@linkedin.com", "@united.com",
+	}
+
+	for _, pattern := range servicePatterns {
+		if strings.Contains(email, pattern) {
+			return "service"
+		}
+	}
+
+	return "contact"
+}
+
+// Get header value by name
+func (e *GmailEmulator) getHeader(msg *GmailMessage, headerName string) string {
+	if msg.Payload == nil {
+		return ""
+	}
+
+	for _, header := range msg.Payload.Headers {
+		if header.Name == headerName {
+			return header.Value
+		}
+	}
+
+	return ""
+}
+
+// New endpoint handler for listing users
+func (e *GmailEmulator) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	e.logRequest(r)
+
+	// Optional query parameters
+	typeFilter := r.URL.Query().Get("type")
+	limitStr := r.URL.Query().Get("limit")
+
+	limit := 0
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	// Filter users
+	filtered := []UserInfo{}
+	for _, user := range e.userList {
+		if typeFilter == "" || user.Type == typeFilter {
+			filtered = append(filtered, user)
+		}
+	}
+
+	// Apply limit
+	if limit > 0 && limit < len(filtered) {
+		filtered = filtered[:limit]
+	}
+
+	response := map[string]interface{}{
+		"users":      filtered,
+		"totalCount": len(e.userList),
+		"metadata": map[string]interface{}{
+			"primaryUser": e.userEmail,
+			"dataPath":    e.dataPath,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // API Handlers
@@ -464,6 +681,7 @@ func (e *GmailEmulator) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":   "healthy",
 		"messages": len(e.messages),
 		"threads":  e.countThreads(),
+		"users":    len(e.userList),
 		"uptime":   time.Since(startTime).String(),
 		"requests": len(e.requestLog),
 	}
@@ -481,15 +699,88 @@ func (e *GmailEmulator) handleDebugStats(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Get top users
+	topUsers := e.userList
+	if len(topUsers) > 10 {
+		topUsers = topUsers[:10]
+	}
+
 	stats := map[string]interface{}{
 		"totalMessages":     len(e.messages),
 		"totalThreads":      e.countThreads(),
+		"totalUsers":        len(e.userList),
 		"labelDistribution": labelStats,
+		"topUsers":          topUsers,
 		"recentRequests":    e.requestLog[max(0, len(e.requestLog)-10):],
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// New endpoint to list available endpoints
+func (e *GmailEmulator) handleListEndpoints(w http.ResponseWriter, r *http.Request) {
+	endpoints := []map[string]string{
+		{
+			"method":      "GET",
+			"path":        "/gmail/v1/users/{userId}/profile",
+			"description": "Get user profile",
+		},
+		{
+			"method":      "GET",
+			"path":        "/gmail/v1/users/{userId}/labels",
+			"description": "List labels",
+		},
+		{
+			"method":      "GET",
+			"path":        "/gmail/v1/users/{userId}/messages",
+			"description": "List messages (supports q, pageToken, maxResults, labelIds parameters)",
+		},
+		{
+			"method":      "GET",
+			"path":        "/gmail/v1/users/{userId}/messages/{messageId}",
+			"description": "Get a specific message",
+		},
+		{
+			"method":      "POST",
+			"path":        "/gmail/v1/users/{userId}/messages/batchGet",
+			"description": "Batch get multiple messages",
+		},
+		{
+			"method":      "POST",
+			"path":        "/oauth2/v4/token",
+			"description": "Mock OAuth token endpoint",
+		},
+		{
+			"method":      "GET",
+			"path":        "/health",
+			"description": "Health check endpoint",
+		},
+		{
+			"method":      "GET",
+			"path":        "/debug/stats",
+			"description": "Debug statistics",
+		},
+		{
+			"method":      "GET",
+			"path":        "/debug/users",
+			"description": "List all email addresses in dataset (supports type and limit parameters)",
+		},
+		{
+			"method":      "GET",
+			"path":        "/",
+			"description": "This endpoint - lists all available endpoints",
+		},
+	}
+
+	response := map[string]interface{}{
+		"endpoints":   endpoints,
+		"version":     "2.3",
+		"description": "Gmail API Emulator serving Enron email data",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func max(a, b int) int {
@@ -532,6 +823,10 @@ func main() {
 	// Health and debug endpoints
 	r.HandleFunc("/health", emulator.handleHealth).Methods("GET")
 	r.HandleFunc("/debug/stats", emulator.handleDebugStats).Methods("GET")
+	r.HandleFunc("/debug/users", emulator.handleListUsers).Methods("GET") // New endpoint
+
+	// Root endpoint - list all endpoints
+	r.HandleFunc("/", emulator.handleListEndpoints).Methods("GET")
 
 	// Enable CORS for testing
 	c := cors.New(cors.Options{
@@ -547,6 +842,8 @@ func main() {
 	log.Printf("Test user email: %s", *userEmail)
 	log.Printf("Health check: http://localhost:%d/health", *port)
 	log.Printf("Debug stats: http://localhost:%d/debug/stats", *port)
+	log.Printf("User list: http://localhost:%d/debug/users", *port)
+	log.Printf("All endpoints: http://localhost:%d/", *port)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), handler); err != nil {
 		log.Fatalf("Server failed: %v", err)
