@@ -1,0 +1,16 @@
+{
+  "dateRange": {
+    "end": "\u003c662b1ececd59a19e@mail.gmail.com\u003e",
+    "start": "\u003cccac8f9ee8c4d00e@mail.gmail.com\u003e"
+  },
+  "labelDistribution": {
+    "CATEGORY_PROMOTIONS": 596,
+    "CATEGORY_UPDATES": 61,
+    "IMPORTANT": 209,
+    "INBOX": 1895,
+    "SENT": 3105,
+    "UNREAD": 5000
+  },
+  "threadCount": 4163,
+  "totalMessages": 5000
+}

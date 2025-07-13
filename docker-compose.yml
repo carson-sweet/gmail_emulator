@@ -1,0 +1,34 @@
+#version: '3.8'
+
+services:
+  # First, transform the Enron data
+  transformer:
+    build:
+      context: ./transformer
+    volumes:
+      - ./data/maildir:/input:ro
+      - ./data/transformed:/output
+    command: >
+      --enron-path /input
+      --output /output
+      --user kaminski-v
+      --limit 5000
+      --test-email test@example.com
+    profiles: ["transform"]
+
+  # Then run the Gmail API emulator
+  gmail-emulator:
+    build:
+      context: ./emulator
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/transformed:/data:ro
+    environment:
+      - TEST_USER_EMAIL=test@example.com
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
