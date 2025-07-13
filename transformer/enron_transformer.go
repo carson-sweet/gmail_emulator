@@ -99,6 +99,11 @@ type TransformStats struct {
 	ThreadCount      int
 }
 
+type contact struct {
+	email string
+	count int
+}
+
 // GmailTransformer handles the transformation from Enron to Gmail format
 type GmailTransformer struct {
 	baseDate      time.Time
@@ -364,10 +369,6 @@ func (t *GmailTransformer) buildPersonaMap(emails []*EnronEmail) {
 		}
 	}
 
-	type contact struct {
-		email string
-		count int
-	}
 	contacts := []contact{}
 	for email, count := range contactFreq {
 		contacts = append(contacts, contact{email, count})

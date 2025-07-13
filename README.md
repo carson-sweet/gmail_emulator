@@ -9,17 +9,17 @@ https://www.carsonsweet.com
 
 ## Quick Start
 
-### Option 1: Build from Source
+*Note: Both the source repo and the Docker image already have 5,000 messages transformed and ready to go. Details on transforming more messages are in the sections below.*
 
-Both the source repo and the Docker image already have 5,000 messages transformed and ready to go. Details on transforming more messages are in the sections below.
+### Option 1: Build Docker Image From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/enron-gmail-emulator.git
-cd enron-gmail-emulator
+git clone https://github.com/carson-sweet/gmail_emulator
+cd gmail_emulator
 
-# Start the Gmail API emulator
-docker-compose up -d gmail-emulator
+# Build and start the Gmail API emulator
+docker-compose up -d gmail_emulator
 
 # Test it
 curl http://localhost:8080/health # simple proof of life
